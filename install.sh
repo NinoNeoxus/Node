@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =======================
-#  SCHNUFFELLLL NODE SETUP
+#  SCHNUFFELLLL NODE SETUP (DB-AWARE)
 # =======================
 
 # Warna
@@ -12,6 +12,12 @@ YELLOW='\033[0;33m'
 NC='\033[0m'
 
 PTERO_DIR="/var/www/pterodactyl"
+
+DB_HOST=""
+DB_PORT=""
+DB_NAME=""
+DB_USER=""
+DB_PASS=""
 
 # ─────────────────────────────
 # Banner / welcome
@@ -27,7 +33,7 @@ display_welcome() {
   echo -e "${BLUE}[+] =============================================== [+]${NC}"
   echo -e ""
   echo -e "Script ini dibuat untuk mempermudah pembuatan Location + Node di panel Pterodactyl."
-  echo -e "Dipakai sendiri aja, jangan dijual pake nama orang lain."
+  echo -e "Versi ini baca DB_HOST, DB_PORT, DB_DATABASE, DB_USERNAME, DB_PASSWORD dari .env."
   echo -e ""
   sleep 2
 }
@@ -79,30 +85,52 @@ install_dependencies() {
 }
 
 # ─────────────────────────────
+# Helper: baca value dari .env dan buang quote
+# ─────────────────────────────
+get_env_value() {
+  local key="$1"
+  local file="$2"
+  grep -E "^${key}=" "$file" | head -n1 | sed "s/^${key}=//" | sed 's/^"//;s/"$//' | sed "s/^'//;s/'$//"
+}
+
+# ─────────────────────────────
 # Baca kredensial DB dari .env
 # ─────────────────────────────
 load_db_env() {
-  if [ ! -f "${PTERO_DIR}/.env" ]; then
-    echo -e "${RED}[!] File ${PTERO_DIR}/.env tidak ditemukan.${NC}"
+  local env_file="${PTERO_DIR}/.env"
+
+  if [ ! -f "${env_file}" ]; then
+    echo -e "${RED}[!] File ${env_file} tidak ditemukan.${NC}"
     echo -e "${YELLOW}[!] Jalankan script ini di server panel yang punya instalasi Pterodactyl.${NC}"
     exit 1
   fi
 
-  DB_NAME=$(grep DB_DATABASE "${PTERO_DIR}/.env" | cut -d '=' -f2)
-  DB_USER=$(grep DB_USERNAME "${PTERO_DIR}/.env" | cut -d '=' -f2)
-  DB_PASS=$(grep DB_PASSWORD "${PTERO_DIR}/.env" | cut -d '=' -f2)
+  DB_HOST=$(get_env_value "DB_HOST" "${env_file}")
+  DB_PORT=$(get_env_value "DB_PORT" "${env_file}")
+  DB_NAME=$(get_env_value "DB_DATABASE" "${env_file}")
+  DB_USER=$(get_env_value "DB_USERNAME" "${env_file}")
+  DB_PASS=$(get_env_value "DB_PASSWORD" "${env_file}")
+
+  # Default fallback
+  [ -z "$DB_HOST" ] && DB_HOST="127.0.0.1"
+  [ -z "$DB_PORT" ] && DB_PORT="3306"
 
   if [ -z "$DB_NAME" ] || [ -z "$DB_USER" ] || [ -z "$DB_PASS" ]; then
     echo -e "${RED}[!] Gagal baca kredensial DB dari .env${NC}"
+    echo -e "${YELLOW}[!] Pastikan DB_DATABASE, DB_USERNAME, dan DB_PASSWORD terisi.${NC}"
     exit 1
   fi
 
-  # Test koneksi DB
-  if ! mysql -u "$DB_USER" -p"$DB_PASS" -e "USE $DB_NAME" >/dev/null 2>&1; then
+  echo -e "${BLUE}[+] Tes koneksi ke DB Pterodactyl...${NC}"
+  if ! mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" -e "USE \`$DB_NAME\`" >/dev/null 2>&1; then
     echo -e "${RED}[!] Tidak bisa connect ke DB Pterodactyl${NC}"
-    echo -e "${YELLOW}[!] Cek service DB & kredensial di .env${NC}"
+    echo -e "${YELLOW}[!] Host : ${DB_HOST}:${DB_PORT}${NC}"
+    echo -e "${YELLOW}[!] User : ${DB_USER}${NC}"
+    echo -e "${YELLOW}[!] Cek service MySQL & kredensial di .env${NC}"
     exit 1
   fi
+
+  echo -e "${GREEN}[+] Koneksi ke DB Pterodactyl berhasil (${DB_HOST}:${DB_PORT} / ${DB_NAME})${NC}"
 }
 
 # ─────────────────────────────
@@ -120,7 +148,7 @@ create_allocations() {
   local success_count=0
 
   for port in $(seq "$START_PORT" "$END_PORT"); do
-    if mysql -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" -e \
+    if mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" -e \
       "INSERT INTO allocations (node_id, ip, port, assigned, server_id) VALUES ($NODE_ID, '0.0.0.0', $port, 0, NULL);" >/dev/null 2>&1; then
       success_count=$((success_count + 1))
     else
@@ -129,7 +157,7 @@ create_allocations() {
   done
 
   local alloc_count
-  alloc_count=$(mysql -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" -N -e \
+  alloc_count=$(mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" -N -e \
     "SELECT COUNT(*) FROM allocations WHERE node_id = $NODE_ID;" 2>/dev/null)
 
   if [ "$success_count" -gt 0 ]; then
